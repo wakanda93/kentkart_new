@@ -1,0 +1,23 @@
+services:
+  kentkart-app:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./database.sqlite:/app/database.sqlite
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped
+
+  # Opsiyonel: SQLite browser
+  sqlite-web:
+    image: coleifer/sqlite-web
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./database.sqlite:/data/database.sqlite
+    command: ["sqlite_web", "/data/database.sqlite", "--host", "0.0.0.0", "--port", "8080"]
+    depends_on:
+      - kentkart-app

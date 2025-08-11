@@ -1,0 +1,29 @@
+{
+  "name": "kentkart-app",
+  "version": "1.0.0",
+  "description": "Kentkart database application",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "NODE_ENV=test mocha tests/kk.test.js --timeout 5000",
+    "test:watch": "NODE_ENV=test mocha tests/**/*.test.js --watch",
+    "test-developer": "ts=$(date +\"%Y%m%d_%H%M%S\") && NODE_ENV=test mocha --reporter mochawesome --reporter-options reportDir=report-dev,reportFilename=Kentkart_API_test_report_dev_$ts,json=true,html=true,code=false,inline=false tests/kk.test.js --timeout 5000",
+    "test-report": "ts=$(date +\"%Y%m%d_%H%M%S\") && NODE_ENV=test mocha --reporter mochawesome --reporter-options reportDir=mochawesome-report,reportFilename=Kentkart_API_test_report_$ts,json=false,html=true,code=false,inline=true tests/kk.test.js --timeout 5000 && zip -j mochawesome-report/report_$ts.zip mochawesome-report/Kentkart_API_test_report_$ts.html",
+    "zip-report": "ts=$(date +\"%Y%m%d%H%M%S\") && zip -j mochawesome-report/report_$ts.zip mochawesome-report/Kentkart_API_test_report.html",
+    "clear-db": "node cleardb.js",
+    "clear-test-data": "node clearTestData.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "sqlite3": "^5.1.6"
+  },
+  "devDependencies": {
+    "chai": "^4.3.10",
+    "chai-http": "^4.3.0",
+    "mocha": "^11.7.1",
+    "mochawesome": "^7.1.3",
+    "nodemon": "^3.0.1",
+    "supertest": "^7.1.4"
+  }
+}
