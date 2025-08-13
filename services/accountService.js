@@ -59,22 +59,31 @@ const updateAccount = (accountId, phoneNumber) => {
   });
 };
 
-// Hesap sil - bağlı media'ların account_id'si NULL yapılır (CASCADE)
+// Hesap sil - bağlı media'ların account_id'si NULL yapılır
 const deleteAccount = (accountId) => {
   return new Promise((resolve, reject) => {
-    db.run('DELETE FROM account WHERE account_id = ?', [accountId], function(err) {
+    // Foreign key constraint'leri aktifleştir
+    db.run('PRAGMA foreign_keys = ON', (err) => {
       if (err) {
         reject(err);
-      } else {
-        if (this.changes === 0) {
-          reject(new Error('Account not found'));
-        } else {
-          resolve({ 
-            deletedRows: this.changes,
-            message: 'Account deleted successfully. Associated media account_id set to NULL.'
-          });
-        }
+        return;
       }
+      
+      // Account'u sil - foreign key constraint otomatik olarak media'ların account_id'sini NULL yapar
+      db.run('DELETE FROM account WHERE account_id = ?', [accountId], function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          if (this.changes === 0) {
+            reject(new Error('Account not found'));
+          } else {
+            resolve({ 
+              deletedRows: this.changes,
+              message: 'Account deleted successfully. Associated media account_id set to NULL.'
+            });
+          }
+        }
+      });
     });
   });
 };

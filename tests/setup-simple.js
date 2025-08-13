@@ -16,11 +16,9 @@ const checkDatabase = () => {
             (SELECT COUNT(*) FROM [transaction]) as transactions`, 
         [], (err, row) => {
             if (err) {
-                console.error('Database kontrol hatası:', err);
                 reject(err);
             } else {
                 const result = row || {accounts: 0, medias: 0, transactions: 0};
-                console.log('📊 Database durumu:', result);
                 resolve(result);
             }
         });
@@ -70,7 +68,6 @@ const api = {
 
 // Statik test verilerini database'e insert et
 const prepareTestData = async () => {
-    console.log('🔧 Test verisi oluşturuluyor...');
     
     try {
         // Statik test hesapları
@@ -89,14 +86,12 @@ const prepareTestData = async () => {
                     [accountData.phone_number],
                     function(err) {
                         if (err) {
-                            console.log(`⚠️ Hesap zaten var: ${accountData.phone_number}`);
                         } else {
                             const account = {
                                 account_id: this.lastID,
                                 phone_number: accountData.phone_number
                             };
                             createdAccounts.push(account);
-                            console.log(`✅ Hesap oluşturuldu: ${accountData.phone_number} (ID: ${this.lastID})`);
                         }
                         resolve();
                     }
@@ -126,7 +121,6 @@ const prepareTestData = async () => {
                     [accountId, createDate, expiryDate, mediaData.balance, mediaData.status],
                     function(err) {
                         if (err) {
-                            console.log(`⚠️ Media oluşturulamadı: ${err.message}`);
                         } else {
                             const media = {
                                 alias_no: this.lastID,
@@ -138,7 +132,6 @@ const prepareTestData = async () => {
                             };
                             createdMedia.push(media);
                             const accountInfo = accountId ? `Account: ${accountId}` : 'Orphan Media';
-                            console.log(`✅ Media oluşturuldu: Alias ${this.lastID} (${accountInfo}, Balance: ${mediaData.balance}, Status: ${mediaData.status})`);
                         }
                         resolve();
                     }
@@ -146,21 +139,18 @@ const prepareTestData = async () => {
             });
         }
         
-        console.log('✅ Test verisi hazırlandı');
         return {
             accounts: createdAccounts,
             media: createdMedia
         };
         
     } catch (error) {
-        console.error('❌ Test verisi hazırlanırken hata:', error.message);
         throw error;
     }
 };
 
 // Basit temizlik fonksiyonu - Sadece tanımladığımız test verilerini temizle
 const cleanup = async () => {
-    console.log('🧹 Test verisi temizleniyor...');
     
     try {
         // SADECE STATIK TEST VERİLERİNİ TEMİZLE
@@ -183,7 +173,6 @@ const cleanup = async () => {
         // Tüm temizlenecek telefon numaraları
         const allTestPhones = [...staticTestPhones, ...knownTestPhones];
         
-        console.log('🗑️ Test transaction verilerini temizleniyor...');
         // 1. Test hesaplarına ait transaction'ları sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM [transaction] WHERE alias_no IN (
@@ -192,7 +181,6 @@ const cleanup = async () => {
                 )
             )`, allTestPhones, (err) => {
                 if (err) console.log(`⚠️ Transaction temizlik hatası: ${err.message}`);
-                else console.log('✅ Test transactionları silindi');
                 resolve();
             });
         });
@@ -205,7 +193,6 @@ const cleanup = async () => {
                 AND alias_no > 1
             )`, [], (err) => {
                 if (err) console.log(`⚠️ Permanent account test transaction temizlik hatası: ${err.message}`);
-                else console.log('✅ Permanent account test transactionları silindi');
                 resolve();
             });
         });
@@ -217,19 +204,16 @@ const cleanup = async () => {
                 AND create_date >= date('now', '-1 day')
             )`, [], (err) => {
                 if (err) console.log(`⚠️ Orphan transaction temizlik hatası: ${err.message}`);
-                else console.log('✅ Test orphan transactionları silindi');
                 resolve();
             });
         });
         
-        console.log('🗑️ Test media verilerini temizleniyor...');
         // 3. Test hesaplarına ait media'ları sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM media WHERE account_id IN (
                 SELECT account_id FROM account WHERE phone_number IN (${allTestPhones.map(() => '?').join(',')})
             )`, allTestPhones, (err) => {
                 if (err) console.log(`⚠️ Media temizlik hatası: ${err.message}`);
-                else console.log('✅ Test medialari silindi');
                 resolve();
             });
         });
@@ -240,7 +224,6 @@ const cleanup = async () => {
                 AND create_date >= date('now') 
                 AND alias_no > 1`, [], (err) => {
                 if (err) console.log(`⚠️ Permanent account test media temizlik hatası: ${err.message}`);
-                else console.log('✅ Permanent account test medialari silindi');
                 resolve();
             });
         });
@@ -250,18 +233,15 @@ const cleanup = async () => {
             db.run(`DELETE FROM media WHERE account_id IS NULL 
                 AND create_date >= date('now', '-1 day')`, [], (err) => {
                 if (err) console.log(`⚠️ Orphan media temizlik hatası: ${err.message}`);
-                else console.log('✅ Test orphan medialar silindi');
                 resolve();
             });
         });
         
-        console.log('🗑️ Test account verilerini temizleniyor...');
         // 5. Test hesaplarını sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM account WHERE phone_number IN (${allTestPhones.map(() => '?').join(',')})`, 
                 allTestPhones, (err) => {
                 if (err) console.log(`⚠️ Account temizlik hatası: ${err.message}`);
-                else console.log('✅ Test accountları silindi');
                 resolve();
             });
         });
@@ -273,27 +253,22 @@ const cleanup = async () => {
                 phone_number LIKE 'temp-%' OR
                 phone_number LIKE 'invalid-%'`, [], (err) => {
                 if (err) console.log(`⚠️ Pattern temizlik hatası: ${err.message}`);
-                else console.log('✅ Geçici test accountları silindi');
                 resolve();
             });
         });
         
-        console.log('✅ Sadece test verileri temizlendi, diğer veriler korundu');
     } catch (error) {
-        console.error('❌ Temizlik sırasında hata:', error.message);
     }
 };
 
 // Test öncesi hazırlık
 const beforeTests = async () => {
-    console.log('🚀 Testler başlıyor...');
     await cleanup(); // Önceki testlerden kalıntıları temizle
     return await prepareTestData();
 };
 
 // Test sonrası temizlik
 const afterTests = async () => {
-    console.log('🏁 Testler bitti');
     await cleanup();
 };
 

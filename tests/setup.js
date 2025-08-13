@@ -106,79 +106,88 @@ const httpHelpers = {
     }
 };
 
+// Helper function to create account - sadece database işlemi
+const createAccount = (phoneNumber) => {
+    return new Promise((resolve, reject) => {
+        db.run(
+            'INSERT INTO account (phone_number) VALUES (?)',
+            [phoneNumber],
+            function(err) {
+                if (err) reject(err);
+                else resolve({
+                    account_id: this.lastID,
+                    phone_number: phoneNumber
+                });
+            }
+        );
+    });
+};
+
+// Helper function to create media - sadece database işlemi
+const createMedia = (accountId, balance, status, expiryDate) => {
+    return new Promise((resolve, reject) => {
+        db.run(
+            'INSERT INTO media (account_id, create_date, expiery_date, balance, status) VALUES (?, ?, ?, ?, ?)',
+            [accountId, new Date().toISOString().split('T')[0], expiryDate, balance, status],
+            function(err) {
+                if (err) reject(err);
+                else resolve({
+                    alias_no: this.lastID,
+                    account_id: accountId,
+                    create_date: new Date().toISOString().split('T')[0],
+                    expiery_date: expiryDate,
+                    balance: balance,
+                    status: status
+                });
+            }
+        );
+    });
+};
+
 const setupTestData = async () => {
     try {
-        // Önce mevcut test verilerini temizle
-        await cleanupTestData();
+        // SABİT VERİLERİ KORUMA MOD'u - Hiçbir veri ekleme/değiştirme yapma
+        // Sadece mevcut verileri API'den al ve döndür
         
-        // Statik test account'larını oluştur
-        const account1 = await httpHelpers.createAccount("05551111001");
-        const account2 = await httpHelpers.createAccount("05551111002"); 
-        const account3 = await httpHelpers.createAccount("05551111003");
-        const account4 = await httpHelpers.createAccount("05551111004");
+        const existingAccounts = await httpHelpers.getAllAccounts();
+        const existingMedia = await httpHelpers.getAllMedia();
         
-        // Statik test media'larını oluştur
-        const media1 = await httpHelpers.createMedia({
-            account_id: account1.body.account_id,
-            balance: 100,
-            status: "active",
-            expiery_date: "2026-08-06"
-        });
-        
-        const media2 = await httpHelpers.createMedia({
-            account_id: account1.body.account_id,
-            balance: 200,
-            status: "blacklist",
-            expiery_date: "2026-08-06"
-        });
-        
-        const media3 = await httpHelpers.createMedia({
-            account_id: account2.body.account_id,
-            balance: 300,
-            status: "active",
-            expiery_date: "2026-03-01"
-        });
-        
-        const media4 = await httpHelpers.createMedia({
-            account_id: account3.body.account_id,
-            balance: 0,
-            status: "active",
-            expiery_date: "2026-03-01"
-        });
-        
-        // Setup tamamlandı - statik test verileri hazır
+        // Mevcut verileri olduğu gibi döndür - hiçbir değişiklik yapma
         return {
-            accounts: [account1.body, account2.body, account3.body, account4.body],
-            media: [media1.body, media2.body, media3.body, media4.body]
+            accounts: existingAccounts.body || [],
+            media: existingMedia.body || []
         };
 
     } catch (error) {
-        console.error('❌ Test verisi oluşturulurken hata:', error);
+        console.error('❌ Test verisi alınırken hata:', error);
         throw error;
     }
 };
 
 const cleanupTestData = async () => {
     try {
-        // Sadece statik test telefon numaralarını tanımla
-        const staticTestPhones = [
-            "05551111001", "05551111002", "05551111003", "05551111004", // Setup statik numaralar
-            "05551111005", "05551111006", "05551111007", // Test sırasında oluşturulan numaralar
-            "05551234567", "05559876543", "05551111111" // Eski statik numaralar (varsa)
+        // HEM test öncesi HEM test sonrası temizlik
+        // Sadece test sırasında oluşturulan geçici verileri temizle
+        // Sabit verileri (05599999999, 05511111111, 05522222222) KORUYALIM
+        
+        const tempTestPhones = [
+            "05551111001", "05551111002", "05551111003", "05551111004", // Test account'ları da temizle
+            "05551111005", "05551111006", "05551111007", "05551111008", "05551111009", "05551111010", // Test sırasında oluşturulan
+            "05551234567", "05559876543", "05551111111" // Eski geçici numaralar
         ];
         
-        // 1. Statik test hesaplarına ait transaction'ları sil
+        // 1. Geçici test hesaplarına ait transaction'ları sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM [transaction] WHERE alias_no IN (
                 SELECT alias_no FROM media WHERE account_id IN (
-                    SELECT account_id FROM account WHERE phone_number IN (${staticTestPhones.map(() => '?').join(',')})
+                    SELECT account_id FROM account WHERE phone_number IN (${tempTestPhones.map(() => '?').join(',')})
                 )
-            )`, staticTestPhones, (err) => {
+            )`, tempTestPhones, (err) => {
                 resolve();
             });
         });
 
-        // 2. Test sırasında oluşturulan account'ların transaction'larını sil (invalid pattern'ler)
+        // 2. Invalid pattern'li account'ların transaction'larını sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM [transaction] WHERE alias_no IN (
                 SELECT alias_no FROM media WHERE account_id IN (
@@ -192,16 +201,16 @@ const cleanupTestData = async () => {
             });
         });
 
-        // 3. Statik test hesaplarına ait media'ları sil
+        // 3. Geçici test hesaplarına ait media'ları sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM media WHERE account_id IN (
-                SELECT account_id FROM account WHERE phone_number IN (${staticTestPhones.map(() => '?').join(',')})
-            )`, staticTestPhones, (err) => {
+                SELECT account_id FROM account WHERE phone_number IN (${tempTestPhones.map(() => '?').join(',')})
+            )`, tempTestPhones, (err) => {
                 resolve();
             });
         });
 
-        // 4. Test sırasında oluşturulan media'ları sil (invalid pattern'ler)
+        // 4. Invalid pattern'li media'ları sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM media WHERE account_id IN (
                 SELECT account_id FROM account WHERE 
@@ -213,15 +222,15 @@ const cleanupTestData = async () => {
             });
         });
 
-        // 5. Statik test hesaplarını sil
+        // 5. Geçici test hesaplarını sil
         await new Promise((resolve) => {
-            db.run(`DELETE FROM account WHERE phone_number IN (${staticTestPhones.map(() => '?').join(',')})`, 
-                staticTestPhones, (err) => {
+            db.run(`DELETE FROM account WHERE phone_number IN (${tempTestPhones.map(() => '?').join(',')})`, 
+                tempTestPhones, (err) => {
                 resolve();
             });
         });
 
-        // 6. Test sırasında oluşturulan hesapları sil (invalid pattern'ler)
+        // 6. Invalid pattern'li hesapları sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM account WHERE 
                 phone_number LIKE 'invalid-%' OR 

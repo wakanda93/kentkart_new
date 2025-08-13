@@ -35,8 +35,13 @@ const createMedia = async (accountId, expieryDate, balance, status = 'active') =
     throw new Error('Invalid status. Must be one of: active, blacklist');
   }
   
+  // Account ID validation - undefined ise error ver, null ise orphan media oluştur
+  if (accountId === undefined) {
+    throw new Error('account_id field is required - use null for orphan media or provide valid account_id');
+  }
+  
   // Account ID varsa, hesabın var olduğunu kontrol et
-  if (accountId) {
+  if (accountId !== null && accountId !== undefined) {
     const account = await getAccountById(accountId);
     if (!account) {
       throw new Error('Account not found - cannot create media with invalid account_id');

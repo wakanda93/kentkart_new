@@ -35,7 +35,7 @@ router.post('/', async (req, res) => {
   try {
     const { alias_no, amount, operation } = req.body;
     
-    if (!alias_no || !amount || !operation) {
+    if (!alias_no || amount === undefined || !operation) {
       return res.status(400).json({ 
         error: 'alias_no, amount, and operation are required' 
       });

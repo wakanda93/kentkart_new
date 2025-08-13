@@ -24,8 +24,15 @@ router.post('/', async (req, res) => {
   try {
     const { phone_number } = req.body;
     
+
     if (!phone_number) {
       return res.status(400).json({ error: 'Phone number is required' });
+    }
+
+    // Phone number format validation (must be 10 or 11 digits, only numbers, and start with 0)
+    const phoneRegex = /^0\d{10}$/;
+    if (!phoneRegex.test(phone_number)) {
+      return res.status(400).json({ error: 'Invalid phone number format. It must start with 0 and be 11 digits.' });
     }
 
     const account = await createAccount(phone_number);

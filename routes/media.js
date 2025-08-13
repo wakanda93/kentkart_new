@@ -63,8 +63,15 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Eğer account_id verilmişse, hesap var mı kontrol et
-    if (account_id) {
+    // Account ID validation - undefined ise error ver, null ise orphan media oluştur
+    if (account_id === undefined) {
+      return res.status(400).json({ 
+        error: 'account_id field is required - use null for orphan media or provide valid account_id' 
+      });
+    }
+    
+    // Eğer account_id null değilse, hesap var mı kontrol et
+    if (account_id !== null && account_id !== undefined) {
       const account = await getAccountById(account_id);
       if (!account) {
         return res.status(404).json({ error: 'Account not found' });
@@ -164,7 +171,6 @@ router.put('/:aliasNo/balance', async (req, res) => {
       return res.status(400).json({ error: 'Balance is required' });
     }
     
-    // CRITICAL SECURITY FIX: Balance validation - Negatif bakiye güvenlik kontrolü
     if (typeof balance !== 'number') {
       return res.status(400).json({ 
         error: 'Balance must be a number.' 
