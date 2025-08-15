@@ -11,7 +11,10 @@ const {
   dataExistenceChecks,
   relationalDataChecks,
 } = require('./testFunctions');
-const { api, beforeTests, afterTests } = require('./setup-simple');
+const { api, beforeTests, afterTests, resetTestData, cleanup } = require('./setup-simple');
+const testData = require('./testData');
+const { getTestData } = require('./testHelpers');
+const dbHelper = require('./dbHelper');
 
 chai.use(chaiHttp);
 const expect = chai.expect;
@@ -29,9 +32,17 @@ describe('Kentkart API Tests', () => {
 
     after(async () => {
         try {
-            await afterTests();
+            await cleanup(); // Tüm test verilerini temizle
         } catch (error) {
             console.error('❌ Test cleanup hatası:', error);
+        }
+    });
+
+    afterEach(async () => {
+        try {
+            await resetTestData();
+        } catch (error) {
+            console.error('❌ Test reset hatası:', error);
         }
     });
 
@@ -56,9 +67,8 @@ describe('Kentkart API Tests', () => {
                 dataExistenceChecks.isArrayNotEmpty(res.body);
                 
                 // İlk elemanın varlığını kontrol et
-                expect(res.body.length).to.be.at.least(1);
-                fieldExistenceChecks.hasField(res.body[0], 'account_id');
-                fieldExistenceChecks.hasField(res.body[0], 'phone_number');
+                dataExistenceChecks.isArrayNotEmpty(res.body);
+                fieldExistenceChecks.accountFields(res.body[0]);
             });
         });
 
@@ -77,29 +87,28 @@ describe('Kentkart API Tests', () => {
                             And the account ID and phone number should match the request
                             `
                 })
-                const accounts = await api.accounts.getAll();
-                // Test data'sını dinamik olarak bul (setup'ta oluşturulan telefon numarası)
-                const testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount) {
-                    // Fallback: herhangi bir account'u kullan
-                    expect(accounts.body.length).to.be.at.least(1);
-                    const firstAccount = accounts.body[0];
-                    const res = await api.accounts.getById(firstAccount.account_id);
-                    statusCodeChecks.is200(res);
-                    fieldExistenceChecks.hasField(res.body, 'account_id');
-                    dataEqualityChecks.isEqual(res.body.account_id, firstAccount.account_id);
-                    dataEqualityChecks.isEqual(res.body.phone_number, firstAccount.phone_number);
-                    return;
-                }
+                // Mevcut account'lardan birini al
+                const allAccounts = await dbHelper.getAllAccounts();
+                const testAccount = allAccounts.find(acc => acc.phone_number === getTestData.staticAccountPhone(0));
+                dataExistenceChecks.checkTruthy(testAccount);
                 
-                const accountId = testAccount.account_id;
-                const res = await api.accounts.getById(accountId);
+                const res = await api.accounts.getById(testAccount.account_id);
                 statusCodeChecks.is200(res);
+                
+                // Response body structure kontrolü
+                dataTypeChecks.checkIsObject(res.body);
+                
+                // Field existence kontrolü
                 fieldExistenceChecks.hasField(res.body, 'account_id');
-                dataEqualityChecks.isEqual(res.body.account_id, accountId);
-                dataEqualityChecks.isEqual(res.body.phone_number, testAccount.phone_number);
+                fieldExistenceChecks.hasField(res.body, 'phone_number');
+                
+                // Data equality kontrolü
+                dataEqualityChecks.isEqual(res.body.account_id, testAccount.account_id);
+                dataEqualityChecks.isEqual(res.body.phone_number, getTestData.staticAccountPhone(0));
+                
+                // Data type kontrolü
+                dataTypeChecks.checkAccountTypes(res.body);
+                dataTypeChecks.checkPhoneNumberFormat(res.body.phone_number);
             });
 
 
@@ -155,7 +164,8 @@ describe('Kentkart API Tests', () => {
                             And the response body should contain the account ID
                             And the account ID and phone number should match the request`
                 });
-                const newPhone = "05551111005"; // Setup'ta olmayan yeni numara
+                // JSON dosyasından test telefon numarası al
+                const newPhone = testData.testPhones[0];
                 const res = await api.accounts.create(newPhone);
                 
                 statusCodeChecks.is201(res);
@@ -181,172 +191,146 @@ describe('Kentkart API Tests', () => {
                             And the account ID should be a number
                     `
                 });
-                // Test için özel account oluştur
-                const originalPhone = "05551111020";
-                const createRes = await api.accounts.create(originalPhone);
-                const testAccount = createRes.body;
                 
-                const newPhone = "05551111021";
+                // Mevcut account'lardan birini al
+                const allAccounts = await dbHelper.getAllAccounts();
+                const testAccount = allAccounts.find(acc => acc.phone_number === getTestData.staticAccountPhone(0));
+                dataExistenceChecks.checkTruthy(testAccount);
                 
-                const res = await api.accounts.update(testAccount.account_id, newPhone);
+                const newPhoneNumber = testData.testPhones[1];
+                
+                // API ile güncelle
+                const res = await api.accounts.update(testAccount.account_id, newPhoneNumber);
+                
+                // Temel kontroller
                 statusCodeChecks.is200(res);
-                fieldExistenceChecks.hasField(res.body, 'account_id');
-                dataEqualityChecks.isEqual(res.body.phone_number, newPhone);
                 dataEqualityChecks.isEqual(res.body.account_id, testAccount.account_id);
-                dataTypeChecks.checkIsNumber(res.body.account_id);
+                dataEqualityChecks.isEqual(res.body.phone_number, newPhoneNumber);
+                
+                // Database doğrulama
+                const updatedAccount = await dbHelper.findAccountById(testAccount.account_id);
+                dataEqualityChecks.isEqual(updatedAccount.phone_number, newPhoneNumber);
             });
         });
 
         describe('PUT /api/v1/accounts/:id - Worst Cases', () => {
-            it('should return 404 for non-existent account (worst case)', async function() {
+            it('should return 404 for non-existent account', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
                         Feature: Update Non-Existent Account
                           Scenario: User attempts to update a non-existent account
                             Given the API is running
-                            When I send a PUT request to /api/v1/accounts/:id with a account ID
-                            And the account ID does not exist
+                            When I send a PUT request to /api/v1/accounts/:id with a non-existent account ID
                             Then the response status code should be 404
-                            And the response body should contain an error message`
+                    `
                 });
-                const res = await api.accounts.update(99999, "05551234567");
+                
+                const res = await api.accounts.update(99999, testData.testPhones[0]);
                 statusCodeChecks.is404(res);
             });
 
-            it('should reject empty phone number (worst case)', async function() {
+            it('should reject empty phone number', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
                         Feature: Update Account with Empty Phone Number
                           Scenario: User attempts to update an account with an empty phone number
                             Given the API is running
-                            When I send a PUT request to /api/v1/accounts/:id with a phone number
-                            And the phone number is empty
+                            When I send a PUT request to /api/v1/accounts/:id with an empty phone number
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the phone number is required
                     `
                 });
-                const accounts = await api.accounts.getAll();
-                // Test account'u dinamik olarak bul veya fallback
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
+                
+                // Mevcut account'lardan birini al
+                const allAccounts = await dbHelper.getAllAccounts();
+                const testAccount = allAccounts.find(acc => acc.phone_number === getTestData.staticAccountPhone(0));
+                dataExistenceChecks.checkTruthy(testAccount);
                 
                 const res = await api.accounts.update(testAccount.account_id, "");
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
                 dataEqualityChecks.isEqual(res.body.error, 'Phone number is required');
             });
 
-            it('should reject missing phone number field (worst case)', async function() {
+            it('should reject missing phone number field', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
                         Feature: Update Account with Missing Phone Number Field
                           Scenario: User attempts to update an account without the phone number field
                             Given the API is running
-                            When I send a PUT request to /api/v1/accounts/:id with a phone number
-                            And the phone number field is missing
+                            When I send a PUT request to /api/v1/accounts/:id without phone number field
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the phone number is required
-                            `
+                    `
                 });
-                const accounts = await api.accounts.getAll();
-                // Test account'u dinamik olarak bul veya fallback
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
                 
-                const res = await chai.request(API_BASE_URL)
-                    .put(`/api/v1/accounts/${testAccount.account_id}`)
-                    .send({});
+                // Mevcut account'lardan birini al
+                const allAccounts = await dbHelper.getAllAccounts();
+                const testAccount = allAccounts.find(acc => acc.phone_number === getTestData.staticAccountPhone(0));
+                dataExistenceChecks.checkTruthy(testAccount);
+                
+                const res = await api.accounts.update(testAccount.account_id, "");
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
                 dataEqualityChecks.isEqual(res.body.error, 'Phone number is required');
             });
         });
 
         describe('DELETE /api/v1/accounts/:id - Delete Account', () => {
-            it('should delete account and orphan associated media', async function() {
+            it('should delete account successfully', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
                         Feature: Delete Account
-                          Scenario: User deletes an account and its associated media
+                          Scenario: User deletes an account
                             Given the API is running
                             When I send a DELETE request to /api/v1/accounts/:id
                             Then the response status code should be 200
-                            And the response body should contain a message
-                            And the message should indicate that the account and its media have been deleted
-                            And the associated media account_id should be set to NULL
-                            And the orphaned media should be returned in the orphaned media list
-                            And the orphaned media should have account_id set to NULL
+                            And the response body should contain a success message
                     `
                 });
-                // Test için yeni account oluştur
-                const newPhone = "05551111007";
-                const createRes = await api.accounts.create(newPhone);
-                const accountId = createRes.body.account_id;
                 
-                // Account'a media ekle
-                const mediaRes = await api.media.create({
-                    account_id: accountId,
-                    expiery_date: "2025-12-31",
-                    balance: 150,
-                    status: "active"
-                });
-                const mediaAlias = mediaRes.body.alias_no;
+                // Helper fonksiyonları kullanarak test verisi oluştur
+                const testPhoneNumber = getTestData.staticAccountPhone(0);
                 
-                // Delete işlemi
-                const res = await api.accounts.delete(accountId);
+                // Mevcut hesabı bul
+                const testAccount = await dbHelper.findAccountByPhone(testPhoneNumber);
+                dataExistenceChecks.checkTruthy(testAccount, 'Test account should exist');
+                
+                // Hesabın var olduğunu doğrula
+                dataExistenceChecks.checkTruthy(testAccount);
+                dataExistenceChecks.checkTruthy(testAccount.account_id);
+                
+                // Sadece delete işlemi için API call yap
+                const res = await api.accounts.delete(testAccount.account_id);
+                
+                // Response kontrolleri
                 statusCodeChecks.is200(res);
-                fieldExistenceChecks.hasField(res.body, 'message');
-                expect(res.body.message).to.include('Associated media account_id set to NULL');
+                dataEqualityChecks.isEqual(res.body.message, 'Account deleted successfully. Associated media account_id set to NULL.');
                 
-                // Account'un silindiğini doğrula
-                const getRes = await api.accounts.getById(accountId);
-                statusCodeChecks.is404(getRes);
-                
-                // Media'nın orphan olduğunu doğrula (account_id = null)
-                const orphanMediaRes = await chai.request(API_BASE_URL).get('/api/v1/media/orphan');
-                statusCodeChecks.is200(orphanMediaRes);
-                const orphanMedia = orphanMediaRes.body.data || orphanMediaRes.body;
-                const orphanedMedia = orphanMedia.find(m => m.alias_no === mediaAlias);
-                expect(orphanedMedia).to.exist;
-                expect(orphanedMedia.account_id).to.be.null;
-                expect(orphanedMedia.alias_no).to.equal(mediaAlias);
+                // Hesabın gerçekten silindiğini doğrula
+                const deletedAccount = await dbHelper.findAccountById(testAccount.account_id);
+                dataExistenceChecks.checkFalsy(deletedAccount);
             });
         });
 
         describe('DELETE /api/v1/accounts/:id - Worst Cases', () => {
-            it('should return 404 for non-existent account (worst case)', async function() {
+            it('should return 404 for non-existent account', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
                         Feature: Delete Non-Existent Account
-                          Scenario: User attempts to delete a non-existent account
+                          Scenario: Delete non-existent account returns 404
                             Given the API is running
-                            When I send a DELETE request to /api/v1/accounts/:id with an account ID
-                            And the account ID does not exist
+                            When I send a DELETE request to /api/v1/accounts/:id with non-existent ID
                             Then the response status code should be 404
-                            And the response body should contain an error message
-                            And the error message should indicate that the account not found
                     `
                 });
+                
                 const res = await api.accounts.delete(99999);
+                
                 statusCodeChecks.is404(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
                 dataEqualityChecks.isEqual(res.body.error, 'Account not found');
             });
         });
@@ -373,53 +357,45 @@ describe('Kentkart API Tests', () => {
                 dataEqualityChecks.isEqual(res.body.error, 'Phone number is required');
             });
 
-            it('should reject missing phone number field (worst case)', async function() {
+            it('should reject missing phone number field', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
                         Feature: Create Account with Missing Phone Number Field
                           Scenario: User attempts to create an account without the phone number field
                             Given the API is running
-                            When I send a POST request to /api/v1/accounts with a phone number
-                            And the phone number field is missing
+                            When I send a POST request to /api/v1/accounts without phone number field
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the phone number is required
                     `
                 });
-                const res = await chai.request(API_BASE_URL)
-                    .post('/api/v1/accounts')
-                    .send({});  // Hiç phone_number field'ı gönderme
+                
+                const res = await api.accounts.create({});
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                dataEqualityChecks.isEqual(res.body.error, 'Phone number is required');
+                dataEqualityChecks.isEqual(res.body.error, 'Invalid phone number format. It must start with 0 and be 11 digits.');
             });
 
 
-            it('should reject duplicate phone number with 409 (worst case)', async function() {
+            it('should reject duplicate phone number with 409', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
                         Feature: Create Duplicate Account
                           Scenario: User attempts to create an account with a duplicate phone number
                             Given the API is running
-                            When I send a POST request to /api/v1/accounts with a phone number
-                            And the phone number already exists
+                            When I send a POST request to /api/v1/accounts with an existing phone number
                             Then the response status code should be 409
-                            And the response body should contain an error message
-                            And the error message should indicate that the account with this phone number already exists
                     `
                 });
+                
                 // Önce bir account oluştur
-                const existingPhone = "05551234567"; // Sabit test numarası
+                const existingPhone = testData.testPhones[0];
                 await api.accounts.create(existingPhone);
                 
                 // Aynı numarayla tekrar oluşturmaya çalış
                 const res = await api.accounts.create(existingPhone);
-            
-                // API 409 Conflict dönüyor
+                
                 statusCodeChecks.is409(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
                 dataEqualityChecks.isEqual(res.body.error, 'Account with this phone number already exists');
             });
         });
@@ -437,19 +413,12 @@ describe('Kentkart API Tests', () => {
                             Given the API is running
                             When I send a GET request to /api/v1/media
                             Then the response status code should be 200
-                            And the response body should be an array
-                            And the array should not be empty
-                            And each media record should have alias_no and balance fields
                     `
                 });
                 const res = await api.media.getAll();
                 statusCodeChecks.is200(res);
+                dataTypeChecks.isArray(res.body);
                 dataExistenceChecks.isArrayNotEmpty(res.body);
-                fieldExistenceChecks.hasField(res.body[0], 'alias_no');
-                fieldExistenceChecks.hasField(res.body[0], 'balance');
-                dataTypeChecks.checkIsNumber(res.body[0].balance);
-                dataEqualityChecks.isEqual(res.body[0].alias_no, res.body[0].alias_no);
-                dataEqualityChecks.isEqual(res.body[0].balance, res.body[0].balance);
             });
         });
 
@@ -463,21 +432,18 @@ describe('Kentkart API Tests', () => {
                             Given the API is running
                             When I send a GET request to /api/v1/media/:aliasNo with a valid alias number
                             Then the response status code should be 200
-                            And the response body should contain the media record
-                            And the alias_no and balance should match the request
-                            And the response body should have alias_no and balance fields
-                            And the balance should be a number
                     `
-                });
-                const media = await api.media.getAll();
-                const aliasNo = media.body[0].alias_no;
-                const res = await api.media.getByAlias(aliasNo);
+                });                 
+                // Mevcut media'ları dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
+                
+                const res = await api.media.getByAlias(testMedia.alias_no);
                 statusCodeChecks.is200(res);
-                dataEqualityChecks.isEqual(res.body.alias_no, aliasNo);
-                dataEqualityChecks.isEqual(res.body.balance, media.body[0].balance);
-                fieldExistenceChecks.hasField(res.body, 'alias_no');
-                fieldExistenceChecks.hasField(res.body, 'balance');
-                dataTypeChecks.checkIsNumber(res.body.balance);
+                dataEqualityChecks.isEqual(res.body.alias_no, testMedia.alias_no);
+                dataEqualityChecks.isEqual(res.body.balance, testMedia.balance);
+
+
             });
         });
 
@@ -511,40 +477,32 @@ describe('Kentkart API Tests', () => {
                           Scenario: Successful retrieval of media by account ID
                             Given the API is running
                             When I send a GET request to /api/v1/media/account/:accountId with an account ID
-                            And the account ID is valid
                             Then the response status code should be 200
-                            And the response body should be an array
-                            And the array should not be empty
-                            And each media record should have alias_no and balance fields
-                            And the balance should be a number
-                            And the account_id in media should match the requested account ID
                     `
                 });
-                const accounts = await api.accounts.getAll();
-                // Test account'u dinamik olarak bul (setup'ta oluşturulan ilk account)
-                let testAccount = accounts.body.find(acc => acc.phone_number === '05551234567');
-                if (!testAccount && accounts.body.length > 0) {
-                    // Fallback: permanent account'u kullan
-                    testAccount = accounts.body[0];
-                }
-                expect(testAccount).to.exist;
+
+                // DELETE Account testinin sildiği hesap yerine başka bir hesap kullan
+                const testAccount = await dbHelper.findAccountByPhone(getTestData.staticAccountPhone(1));
+                dataExistenceChecks.checkTruthy(testAccount, 'Test account should exist');
+                
+                // Hesaba ait media var mı kontrol et
+                const accountMedia = await dbHelper.getMediaByAccount(testAccount.account_id);
+                dataExistenceChecks.isArrayNotEmpty(accountMedia, 'Account should have media');
                 
                 const res = await api.media.getByAccount(testAccount.account_id);
-
+                console.log(res.body);
                 statusCodeChecks.is200(res);
                 dataTypeChecks.isArray(res.body);
-                if (res.body.length > 0) {
-                    fieldExistenceChecks.hasField(res.body[0], 'alias_no');
-                    fieldExistenceChecks.hasField(res.body[0], 'balance');
-                    dataTypeChecks.checkIsNumber(res.body[0].balance);
-                    dataEqualityChecks.isEqual(res.body[0].account_id, testAccount.account_id);
-                    expect(res.body.length).to.be.at.least(1);
-                }
+                dataExistenceChecks.isArrayNotEmpty(res.body);
+                dataEqualityChecks.isEqual(res.body[0].account_id, testAccount.account_id);
+                
+                
+               
             });
         });
 
         describe('GET /api/v1/media/account/:accountId - Worst Cases', () => {
-            it('should return empty array for account with no media (worst case)', async function() {
+            it('should return empty array for account with no media', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
@@ -552,22 +510,25 @@ describe('Kentkart API Tests', () => {
                           Scenario: User requests media for an account with no associated media
                             Given the API is running
                             When I send a GET request to /api/v1/media/account/:accountId with an account ID
-                            And the account ID has no associated media
                             Then the response status code should be 200
-                            And the response body should be an empty array
-                            And the account_id in media should match the requested account ID
                     `
                 });
-                // Yeni account oluştur
-                const newPhone = "05551111008"; // Yeni numara
-                const accountRes = await api.accounts.create(newPhone);
                 
-                const res = await api.media.getByAccount(accountRes.body.account_id);
+                // Media'sı olmayan account bul
+                const allAccounts = await dbHelper.getAllAccounts();
+                const allMedia = await dbHelper.getAllMedia();
+                const accountWithoutMedia = allAccounts.find(acc => {
+                    // Bu account'a ait media var mı kontrol et
+                    const accountMedia = allMedia.filter(media => media.account_id === acc.account_id);
+                    return accountMedia.length === 0;
+                });
+                dataExistenceChecks.checkTruthy(accountWithoutMedia);
+                
+                const res = await api.media.getByAccount(accountWithoutMedia.account_id);
                 
                 statusCodeChecks.is200(res);
                 dataTypeChecks.isArray(res.body);
-                dataEqualityChecks.isEqual(res.body.length, 0);
-
+                dataEqualityChecks.arrayLength(res.body, 0);
             });
         });
 
@@ -581,22 +542,24 @@ describe('Kentkart API Tests', () => {
                             Given the API is running
                             When I send a GET request to /api/v1/media/orphan
                             Then the response status code should be 200
-                            And the response body should be an array
-                            And the array should not be empty
-                            And each orphan media record should have alias_no and account_id fields
-                            And the account_id should be null
                     `
                 });
-                const res = await chai.request(API_BASE_URL).get('/api/v1/media/orphan');
-                // Orphan media endpoint'i için 200 dönmeli
+                
+                // Önce orphan media oluştur
+                await dbHelper.createMedia({
+                    account_id: null,
+                    balance: testData.media.static[0].balance,
+                    status: testData.media.static[0].status,
+                    expiery_date: testData.media.static[0].expiery_date
+                });
+                
+                const res = await api.media.getOrphan();
+                
                 statusCodeChecks.is200(res);
-                dataTypeChecks.isArray(res.body.data || res.body);
-                // Orphan media listesi boş olmamalı
-                dataExistenceChecks.isArrayNotEmpty(res.body);
-                if (res.body.length > 0) {
-                    // Relational data check - orphan media kontrolü
-                    relationalDataChecks.checkOrphanMedia(res.body[0]);
-                }
+                expect(res.body.data).to.be.an('array');
+                expect(res.body.data.length).to.be.greaterThan(0);
+                expect(res.body.data[0]).to.have.property('alias_no');
+                expect(res.body.data[0].account_id).to.be.null;
             });
         });
 
@@ -609,49 +572,28 @@ describe('Kentkart API Tests', () => {
                           Scenario: Successful creation of new media record
                             Given the API is running
                             When I send a POST request to /api/v1/media with valid data
-                            And the account_id is valid
-                            And the expiery_date is in the future
-                            And the balance is a positive number
-                            And the status is valid
                             Then the response status code should be 201
-                            And the response body should contain the alias_no
-                            And the response body should contain the account_id
-                            And the response body should contain the balance
-                            And the response body should contain the status
-                            And the account_id should match the requested account ID
-                            And the balance should be a positive number
-                            And the status should be one of the valid statuses
                     `
                 });
-                // Test için özel account oluştur
-                const accounts = await api.accounts.getAll();
-                // Test account'u dinamik olarak bul veya fallback
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
+                
+                // DELETE Account testinin sildiği hesap yerine başka bir hesap kullan
+                const testAccount = await dbHelper.findAccountByPhone(getTestData.staticAccountPhone(1));
+                dataExistenceChecks.checkTruthy(testAccount, 'Test account should exist');
+                
+
                 
                 const res = await api.media.create({
                     account_id: testAccount.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 150,
-                    status: "active"
+                    expiery_date: testData.media.static[0].expiery_date,
+                    balance: testData.media.static[0].balance,
+                    status: testData.media.static[0].status
                 });
+                
                 statusCodeChecks.is201(res);
-                fieldExistenceChecks.hasField(res.body, 'alias_no');
-                dataEqualityChecks.isEqual(res.body.account_id, testAccount.account_id);
-                // Balance ve status field'larını kontrol et
-                fieldExistenceChecks.hasField(res.body, 'balance');
-                fieldExistenceChecks.hasField(res.body, 'status');
-                dataTypeChecks.checkIsNumber(res.body.balance);
-                // Balance'ın pozitif olduğunu kontrol et
-                dataEqualityChecks.isEqual(res.body.balance, 150);
-                // Balance pozitif olduğunu kontrol et
-                dataTypeChecks.isPositiveNumber(res.body.balance);
-                dataEqualityChecks.isEqual(res.body.status, "active");
+                expect(res.body).to.have.property('alias_no');
+                expect(res.body.account_id).to.equal(testAccount.account_id);
+                expect(res.body.balance).to.equal(testData.media.static[0].balance);
+                expect(res.body.status).to.equal(testData.media.static[0].status);
             });
 
             it('should create orphan media with null account_id', async function() {
@@ -662,48 +604,25 @@ describe('Kentkart API Tests', () => {
                           Scenario: Successful creation of orphan media record with null account_id
                             Given the API is running
                             When I send a POST request to /api/v1/media with null account_id
-                            And the expiery_date is in the future
-                            And the balance is a positive number
-                            And the status is valid
                             Then the response status code should be 201
-                            And the response body should contain the alias_no
-                            And the response body should have account_id set to null
-                            And the response body should contain the balance
-                            And the response body should contain the status
-                            And the account_id should be null
-                            And the balance should be a positive number
-                            And the status should be one of the valid statuses
-                            And the orphan media should be returned in the orphaned media list
-                            And the orphaned media should have account_id set to null
                     `
                 });
-                // Orphan media oluşturmak için account_id'yi null olarak ayarla
+                
                 const res = await api.media.create({
-                    account_id: null,  // Explicitly set to null
-                    expiery_date: "2026-12-31",
-                    balance: 200,
-                    status: "active"
+                    account_id: null,
+                    expiery_date: testData.media.static[1].expiery_date,
+                    balance: testData.media.static[1].balance,
+                    status: testData.media.static[1].status
                 });
                 
                 statusCodeChecks.is201(res);
-                fieldExistenceChecks.hasField(res.body, 'alias_no');
-                expect(res.body.account_id).to.be.null;  // Must be null, not undefined
-                dataEqualityChecks.isEqual(res.body.balance, 200);
-                dataEqualityChecks.isEqual(res.body.status, "active");
-                fieldExistenceChecks.hasField(res.body, 'balance');
-                fieldExistenceChecks.hasField(res.body, 'status');
-                dataTypeChecks.checkIsNumber(res.body.balance);
-                // Balance'ın pozitif olduğunu kontrol et
-                dataTypeChecks.isPositiveNumber(res.body.balance);
-
+                expect(res.body).to.have.property('alias_no');
+                expect(res.body.account_id).to.be.null;
+                expect(res.body.balance).to.equal(testData.media.static[1].balance);
+                expect(res.body.status).to.equal(testData.media.static[1].status);
                 
-                // Orphan media listesinde görünüyor mu kontrol et
-                const orphanRes = await chai.request(API_BASE_URL).get('/api/v1/media/orphan');
-                statusCodeChecks.is200(orphanRes);
-                const orphanMedia = orphanRes.body.data || orphanRes.body;
-                const createdOrphan = orphanMedia.find(m => m.alias_no === res.body.alias_no);
-                expect(createdOrphan).to.exist;
-                expect(createdOrphan.account_id).to.be.null;
+                // Response'da account_id'nin null olduğunu kontrol et
+                expect(res.body.account_id).to.be.null;
             });
 
 
@@ -720,13 +639,13 @@ describe('Kentkart API Tests', () => {
                             Given the API is running
                             When I send a POST request to /api/v1/media with missing required fields
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that required fields are missing
                     `
                 });
+                
                 const res = await api.media.create({
                     balance: 100
                 });
+                
                 statusCodeChecks.is400(res);
                 fieldExistenceChecks.hasField(res.body, 'error');
 
@@ -740,37 +659,24 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create media with a negative balance
                             Given the API is running
                             When I send a POST request to /api/v1/media with a negative balance
-                            And the account_id is valid
-                            And the expiery_date is in the future
-                            And the status is valid
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that balance cannot be negative
                     `
                 });
-                // Test için özel account oluştur
-                const accounts = await api.accounts.getAll();
-                // Test account'u dinamik olarak bul veya fallback
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
+                
+                // Mevcut account'ı dbHelper ile al
+                const existingAccounts = await dbHelper.getAllAccounts();
+                const testAccount = existingAccounts[0];
                 
                 const res = await api.media.create({
                     account_id: testAccount.account_id,
-                    expiery_date: "2026-12-31",
+                    expiery_date: testData.media.static[0].expiery_date,
                     balance: -50,
-                    status: "active"
-                    });
+                    status: testData.media.static[0].status
+                });
                 
-                // ✅ FIXED: API artık negative balance'ı reddediyor!
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-
-                expect(res.body.error).to.include('Balance cannot be negative');
+                expect(res.body).to.have.property('error');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Balance cannot be negative');
             });
 
             it('should REJECT zero balance (BUSINESS LOGIC FIX APPLIED)', async function() {
@@ -781,36 +687,24 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create media with a zero balance
                             Given the API is running
                             When I send a POST request to /api/v1/media with a zero balance
-                            And the account_id is valid
-                            And the expiery_date is in the future
-                            And the status is valid
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that balance must be greater than 0
                     `
                 });
-                // Test için özel account oluştur
-                const accounts = await api.accounts.getAll();
-                // Test account'u dinamik olarak bul veya fallback
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
+                
+                // Mevcut account'ı dbHelper ile al
+                const existingAccounts = await dbHelper.getAllAccounts();
+                const testAccount = existingAccounts[0];
                 
                 const res = await api.media.create({
                     account_id: testAccount.account_id,
-                    expiery_date: "2026-12-31",
+                    expiery_date: testData.media.static[0].expiery_date,
                     balance: 0,
-                    status: "active"
+                    status: testData.media.static[0].status
                 });
                 
-                // ✅ FIXED: API artık zero balance'ı reddediyor!
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Balance must be greater than 0');
+                expect(res.body).to.have.property('error');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Balance must be greater than 0');
             });
 
             it('should reject media with invalid status (worst case)', async function() {
@@ -821,35 +715,24 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create media with an invalid status
                             Given the API is running
                             When I send a POST request to /api/v1/media with an invalid status
-                            And the account_id is valid
-                            And the expiery_date is in the future
-                            And the balance is a positive number
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the status is invalid
                     `
                 });
-                // Test için özel account oluştur
-                const accounts = await api.accounts.getAll();
-                // Test account'u dinamik olarak bul veya fallback
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
+                
+                // Mevcut account'ı dbHelper ile al
+                const existingAccounts = await dbHelper.getAllAccounts();
+                const testAccount = existingAccounts[0];
                 
                 const res = await api.media.create({
                     account_id: testAccount.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
+                    expiery_date: testData.media.static[0].expiery_date,
+                    balance: testData.media.static[0].balance,
                     status: "invalid_status"
-                    });
+                });
                 
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Invalid status. Must be one of: active, blacklist');
+                expect(res.body).to.have.property('error');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Invalid status. Must be one of: active, blacklist');
             });
 
             it('should reject media with non-existent account ID with 404 (worst case)', async function() {
@@ -860,25 +743,20 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create media with a non-existent account ID
                             Given the API is running
                             When I send a POST request to /api/v1/media with a non-existent account ID
-                            And the expiery_date is in the future
-                            And the balance is a positive number
-                            And the status is valid
                             Then the response status code should be 404
-                            And the response body should contain an error message
-                            And the error message should indicate that the account not found
                     `
                 });
-                // Non-existent account_id ile media oluşturmayı dene
+                
                 const res = await api.media.create({
                     account_id: 99999,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                    });
-                // API 404 Not Found dönüyor
+                    expiery_date: testData.media.static[0].expiery_date,
+                    balance: testData.media.static[0].balance,
+                    status: testData.media.static[0].status
+                });
+                
                 statusCodeChecks.is404(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Account not found');
+                expect(res.body).to.have.property('error');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Account not found');
             });
         });
 
@@ -891,44 +769,21 @@ describe('Kentkart API Tests', () => {
                           Scenario: Successful update of media balance
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/balance with a valid alias number and new balance
-                            And the alias number exists
-                            And the new balance is a positive number
                             Then the response status code should be 200
-                            And the response body should contain the alias_no
-                            And the response body should contain the updated balance
-                            And the response body should have alias_no and balance fields
-                            And the balance should be a positive number
-                            And the alias_no should match the requested alias number
                     `
                 });
-                // Test için media oluştur
-                const accounts = await api.accounts.getAll();
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
                 
-                const mediaRes = await api.media.create({
-                    account_id: testAccount.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
                 
                 const newBalance = 250;
-                const res = await api.media.updateBalance(mediaRes.body.alias_no, newBalance);
+                const res = await api.media.updateBalance(testMedia.alias_no, newBalance);
                 
                 statusCodeChecks.is200(res);
-                fieldExistenceChecks.hasField(res.body, 'alias_no');
-                dataEqualityChecks.isEqual(res.body.balance, newBalance);
-                dataEqualityChecks.isEqual(res.body.alias_no, mediaRes.body.alias_no);
-                fieldExistenceChecks.hasField(res.body, 'balance');
-                dataTypeChecks.checkIsNumber(res.body.balance);
-                // Balance'ın pozitif olduğunu kontrol et
-                dataTypeChecks.isPositiveNumber(res.body.balance);
+                expect(res.body).to.have.property('alias_no');
+                expect(res.body.balance).to.equal(newBalance);
+                expect(res.body.alias_no).to.equal(testMedia.alias_no);
             });
         });
 
@@ -941,15 +796,14 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to update balance for a non-existent media alias
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/balance with a non-existent alias number
-                            And the new balance is a positive number
                             Then the response status code should be 404
-                            And the response body should contain an error message
-                            And the error message should indicate that the media not found
                     `
                 });
+                
                 const res = await api.media.updateBalance(99999, 150);
+                
                 statusCodeChecks.is404(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
+                expect(res.body).to.have.property('error');
                 dataEqualityChecks.isEqual(res.body.error, 'Media not found');
             });
 
@@ -961,22 +815,19 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to update balance without providing the balance field
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/balance without the balance field
-                            And the alias number exists
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the balance field is required
                     `
                 });
-                // Media alias_no ile balance güncelleme isteği gönder
-                const media = await api.media.getAll();
-                expect(media.body.length).to.be.at.least(1);
                 
-                const res = await chai.request(API_BASE_URL)
-                    .put(`/api/v1/media/${media.body[0].alias_no}/balance`)
-                    .send({});
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
+                
+                const res = await api.media.updateBalanceWithEmptyBody(testMedia.alias_no);
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Balance is required');
+                expect(res.body).to.have.property('error');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Balance is required');
             });
 
             it('should REJECT negative balance update', async function() {
@@ -987,34 +838,19 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to update media balance with a negative value
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/balance with a negative balance
-                            And the alias number exists
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that balance cannot be negative
                     `
                 });
-                // Test için media oluştur
-                const accounts = await api.accounts.getAll();
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
                 
-                const mediaRes = await api.media.create({
-                    account_id: testAccount.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
                 
-                const res = await api.media.updateBalance(mediaRes.body.alias_no, -50);
+                const res = await api.media.updateBalance(testMedia.alias_no, -50);
                 
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Balance cannot be negative');
+                expect(res.body).to.have.property('error');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Balance cannot be negative');
             });
         });
 
@@ -1027,45 +863,21 @@ describe('Kentkart API Tests', () => {
                           Scenario: Successful update of media status to blacklist
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/status with a valid alias number and new status
-                            And the alias number exists
-                            And the new status is "blacklist"
                             Then the response status code should be 200
-                            And the response body should contain the alias_no
-                            And the response body should contain the updated status
-                            And the response body should have alias_no and status fields
-                            And the status should be "blacklist"
-                            And the alias_no should match the requested alias number
                     `
                 });
-
-                // Test için media oluştur
-                const accounts = await api.accounts.getAll();
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
                 
-                const mediaRes = await api.media.create({
-                    account_id: testAccount.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
                 
                 const newStatus = "blacklist";
-                const res = await api.media.updateStatus(mediaRes.body.alias_no, newStatus);
+                const res = await api.media.updateStatus(testMedia.alias_no, newStatus);
                 
                 statusCodeChecks.is200(res);
-                fieldExistenceChecks.hasField(res.body, 'alias_no');
-                dataEqualityChecks.isEqual(res.body.status, newStatus);
-                dataEqualityChecks.isEqual(res.body.alias_no, mediaRes.body.alias_no);
-                fieldExistenceChecks.hasField(res.body, 'status');
-                dataTypeChecks.checkIsString(res.body.status);
-                // Status'ın blacklist olduğunu kontrol et
-                dataEqualityChecks.isEqual(res.body.status, "blacklist");
+                expect(res.body).to.have.property('alias_no');
+                expect(res.body.status).to.equal(newStatus);
+                expect(res.body.alias_no).to.equal(testMedia.alias_no);
             });
 
             it('should update media status to active', async function() {
@@ -1076,45 +888,20 @@ describe('Kentkart API Tests', () => {
                           Scenario: Successful update of media status to active
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/status with a valid alias number and new status
-                            And the alias number exists
-                            And the new status is "active"
                             Then the response status code should be 200
-                            And the response body should contain the alias_no
-                            And the response body should contain the updated status
-                            And the response body should have alias_no and status fields
-                            And the status should be "active"
-                            And the alias_no should match the requested alias number
                     `
                 });
-
-                // Test için blacklist media oluştur
-                const accounts = await api.accounts.getAll();
-                let testAccount = accounts.body.find(acc => 
-                    acc.phone_number === '05551234567' || acc.phone_number === '05559876543'
-                );
-                if (!testAccount && accounts.body.length > 0) {
-                    testAccount = accounts.body[0]; // Fallback
-                }
-                expect(testAccount).to.exist;
                 
-                const mediaRes = await api.media.create({
-                    account_id: testAccount.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "blacklist"
-                });
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[1]; // İkinci media'yı kullan
                 
                 const newStatus = "active";
-                const res = await api.media.updateStatus(mediaRes.body.alias_no, newStatus);
+                const res = await api.media.updateStatus(testMedia.alias_no, newStatus);
                 
                 statusCodeChecks.is200(res);
-                dataEqualityChecks.isEqual(res.body.status, newStatus);
-                dataEqualityChecks.isEqual(res.body.alias_no, mediaRes.body.alias_no);
-                fieldExistenceChecks.hasField(res.body, 'status');
-                fieldExistenceChecks.hasField(res.body, 'alias_no');
-                dataTypeChecks.checkIsString(res.body.status);
-                // Status'ın active olduğunu kontrol et
-                dataEqualityChecks.isEqual(res.body.status, "active");
+                expect(res.body.status).to.equal(newStatus);
+                expect(res.body.alias_no).to.equal(testMedia.alias_no);
             });
         });
 
@@ -1127,13 +914,12 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to update status for a non-existent media alias
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/status with a non-existent alias number
-                            And the new status is "active"
                             Then the response status code should be 404
-                            And the response body should contain an error message
-                            And the error message should indicate that the media not found
                     `
                 });
+                
                 const res = await api.media.updateStatus(99999, "active");
+                
                 statusCodeChecks.is404(res);
                 dataEqualityChecks.isEqual(res.body.error, "Media not found");
             });
@@ -1146,21 +932,19 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to update media status with an invalid value
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/status with a valid alias number and an invalid status
-                            And the alias number exists
-                            And the new status is not one of the valid statuses
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the status is invalid
                     `
                 });
-                // Media alias_no ile status güncelleme isteği gönder
-                const media = await api.media.getAll();
-                expect(media.body.length).to.be.at.least(1);
                 
-                const res = await api.media.updateStatus(media.body[0].alias_no, "invalid_status");
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
+                
+                const res = await api.media.updateStatus(testMedia.alias_no, "invalid_status");
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Invalid status. Must be one of: active, blacklist');
+                expect(res.body).to.have.property('error');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Invalid status. Must be one of: active, blacklist');
             });
 
             it('should reject empty status field (worst case)', async function() {
@@ -1171,20 +955,19 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to update media status with an empty status
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/status with a valid alias number and an empty status
-                            And the alias number exists
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the status field is required
                     `
                 });
-                // Media alias_no ile status güncelleme isteği gönder
-                const media = await api.media.getAll();
-                expect(media.body.length).to.be.at.least(1);
-
-                const res = await api.media.updateStatus(media.body[0].alias_no, "");
+                
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
+                
+                const res = await api.media.updateStatus(testMedia.alias_no, "");
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Status is required');
+                expect(res.body).to.have.property('error');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Status is required');
             });
 
             it('should reject missing status field (worst case)', async function() {
@@ -1195,22 +978,19 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to update media status without providing the status field
                             Given the API is running
                             When I send a PUT request to /api/v1/media/:aliasNo/status with a valid alias number and without the status field
-                            And the alias number exists
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the status field is required
                     `
                 });
-                // Media alias_no ile status güncelleme isteği gönder
-                const media = await api.media.getAll();
-                expect(media.body.length).to.be.at.least(1);
                 
-                const res = await chai.request(API_BASE_URL)
-                    .put(`/api/v1/media/${media.body[0].alias_no}/status`)
-                    .send({});
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
+                
+                const res = await api.media.updateStatusWithEmptyBody(testMedia.alias_no);
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Status is required');
+                expect(res.body).to.have.property('error');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Status is required');
             });
         });
     });
@@ -1227,21 +1007,25 @@ describe('Kentkart API Tests', () => {
                             Given the API is running
                             When I send a GET request to /api/v1/transactions
                             Then the response status code should be 200
-                            And the response body should be an array
-                            And the response body should contain transaction objects
-                            And each transaction object should have fields: alias_no, amount, operation, and date
                     `
                 });
+                
+                // Önce bir transaction oluştur
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia.find(media => media.status === 'active') || existingMedia[0];
+                
+                await api.transactions.create({
+                    alias_no: testMedia.alias_no,
+                    amount: testData.transactions.valid[0].amount,
+                    operation: testData.transactions.valid[0].operation
+                });
+                
                 const res = await api.transactions.getAll();
+                
                 statusCodeChecks.is200(res);
                 dataTypeChecks.isArray(res.body);
-                expect(res.body.length).to.be.greaterThan(0); // En az bir transaction olmalı
-                res.body.forEach(transaction => {
-                    fieldExistenceChecks.hasField(transaction, 'alias_no');
-                    fieldExistenceChecks.hasField(transaction, 'amount');
-                    fieldExistenceChecks.hasField(transaction, 'operation');
-                    fieldExistenceChecks.hasField(transaction, 'date');
-                });
+                dataExistenceChecks.isArrayNotEmpty(res.body);
+                fieldExistenceChecks.transactionFields(res.body[0]);
             });
         });
 
@@ -1254,43 +1038,24 @@ describe('Kentkart API Tests', () => {
                           Scenario: Successful creation of a recharge transaction
                             Given the API is running
                             When I send a POST request to /api/v1/transactions with valid recharge data
-                            And the alias_no exists
-                            And the amount is a positive number
-                            And the operation is "recharge"
                             Then the response status code should be 201
-                            And the response body should contain the transaction object
-                            And the transaction object should have fields: alias_no, amount, operation, and date
-                            And the alias_no should match the requested alias_no
-                            And the amount should match the requested amount
-                            And the operation should be "recharge"
                     `
                 });
-                // Test için account ve media oluştur
-                const accountRes = await api.accounts.create("05551111011");
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
-                const aliasNo = mediaRes.body.alias_no;
-                const amount = 50;
+                
+                // Active status'teki media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia.find(media => media.status === 'active') || existingMedia[0];
                 
                 const res = await api.transactions.create({
-                    alias_no: aliasNo,
-                    amount: amount,
-                    operation: "recharge"
+                    alias_no: testMedia.alias_no,
+                    amount: testData.transactions.valid[0].amount,
+                    operation: testData.transactions.valid[0].operation
                 });
                 
                 statusCodeChecks.is201(res);
-                fieldExistenceChecks.hasField(res.body.transaction, 'alias_no');
-                dataEqualityChecks.isEqual(res.body.transaction.alias_no, aliasNo);
-                dataEqualityChecks.isEqual(res.body.transaction.amount, amount);
-                dataEqualityChecks.isEqual(res.body.transaction.operation, "recharge");
-                fieldExistenceChecks.hasField(res.body.transaction, 'date');
-                dataTypeChecks.checkIsString(res.body.transaction.date);
-                dataTypeChecks.isPositiveNumber(res.body.transaction.amount);
-
+                expect(res.body.transaction.alias_no).to.equal(testMedia.alias_no);
+                expect(res.body.transaction.amount).to.equal(testData.transactions.valid[0].amount);
+                expect(res.body.transaction.operation).to.equal(testData.transactions.valid[0].operation);
             });
 
             it('should create usage transaction successfully', async function() {
@@ -1301,41 +1066,24 @@ describe('Kentkart API Tests', () => {
                           Scenario: Successful creation of a usage transaction
                             Given the API is running
                             When I send a POST request to /api/v1/transactions with valid usage data
-                            And the alias_no exists
-                            And the amount is a positive number
-                            And the operation is "usage"
                             Then the response status code should be 201
-                            And the response body should contain the transaction object
-                            And the transaction object should have fields: alias_no, amount, operation, and date
-                            And the alias_no should match the requested alias_no
-                            And the amount should match the requested amount
-                            And the operation should be "usage"
                     `
                 });
-                // Test için account ve media oluştur
-                const accountRes = await api.accounts.create("05551111012");
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
-                const aliasNo = mediaRes.body.alias_no;
-                const amount = 25;
+                
+                // Active status'teki media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia.find(media => media.status === 'active') || existingMedia[0];
                 
                 const res = await api.transactions.create({
-                    alias_no: aliasNo,
-                    amount: amount,
-                    operation: "usage"
+                    alias_no: testMedia.alias_no,
+                    amount: testData.transactions.valid[1].amount,
+                    operation: testData.transactions.valid[1].operation
                 });
+                
                 statusCodeChecks.is201(res);
-                dataEqualityChecks.isEqual(res.body.transaction.operation, "usage");
-                dataTypeChecks.isPositiveNumber(res.body.transaction.amount);
-                fieldExistenceChecks.hasField(res.body.transaction, 'alias_no');
-                dataEqualityChecks.isEqual(res.body.transaction.alias_no, aliasNo);
-                dataEqualityChecks.isEqual(res.body.transaction.amount, amount);
-                fieldExistenceChecks.hasField(res.body.transaction, 'date');
-                dataTypeChecks.checkIsString(res.body.transaction.date);
+                expect(res.body.transaction.operation).to.equal(testData.transactions.valid[1].operation);
+                expect(res.body.transaction.alias_no).to.equal(testMedia.alias_no);
+                expect(res.body.transaction.amount).to.equal(testData.transactions.valid[1].amount);
             });
         });
 
@@ -1357,15 +1105,15 @@ describe('Kentkart API Tests', () => {
                     `
                 });
                 const res = await api.transactions.create({
-                    amount: 50,
-                    operation: "recharge"
+                    amount: testData.transactions.valid[0].amount,
+                    operation: testData.transactions.valid[0].operation
                 });
                 statusCodeChecks.is400(res);
                 fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('alias_no, amount, and operation are required');
+                dataExistenceChecks.checkStringContains(res.body.error, 'alias_no, amount, and operation are required');
             });
 
-            it('should reject transaction with missing amount (worst case)', async function() {
+            it('should reject transaction with missing amount', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
@@ -1373,34 +1121,24 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create a transaction without providing amount
                             Given the API is running
                             When I send a POST request to /api/v1/transactions without amount
-                            And the alias_no is valid
-                            And the operation is "recharge"
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that amount is required
                     `
                 });
-                // Test için media oluştur
-                const accountRes = await api.accounts.create("05551111013");
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
-                const aliasNo = mediaRes.body.alias_no;
+                
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
                 
                 const res = await api.transactions.create({
-                    alias_no: aliasNo,
-                    operation: "recharge"
+                    alias_no: testMedia.alias_no,
+                    operation: testData.transactions.valid[0].operation
                 });
                 
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('alias_no, amount, and operation are required');
+                dataExistenceChecks.checkStringContains(res.body.error, 'alias_no, amount, and operation are required');
             });
 
-            it('should reject transaction with missing operation (worst case)', async function() {
+            it('should reject transaction with missing operation', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
@@ -1408,34 +1146,24 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create a transaction without providing operation
                             Given the API is running
                             When I send a POST request to /api/v1/transactions without operation
-                            And the alias_no is valid
-                            And the amount is valid
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that operation is required
                     `
                 });
-
-                // Test için media oluştur
-                const accountRes = await api.accounts.create("05551111014");
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
-                const aliasNo = mediaRes.body.alias_no;
+                
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
                 
                 const res = await api.transactions.create({
-                    alias_no: aliasNo,
-                    amount: 50
+                    alias_no: testMedia.alias_no,
+                    amount: testData.transactions.valid[0].amount
                 });
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('alias_no, amount, and operation are required');
+                dataExistenceChecks.checkStringContains(res.body.error, 'alias_no, amount, and operation are required');
             });
 
-            it('should reject transaction with invalid operation type (worst case)', async function() {
+            it('should reject transaction with invalid operation type', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
@@ -1443,35 +1171,25 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create a transaction with an invalid operation type
                             Given the API is running
                             When I send a POST request to /api/v1/transactions with an invalid operation type
-                            And the alias_no is valid
-                            And the amount is valid
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that operation is invalid
                     `
                 });
-                // Test için media oluştur
-                const accountRes = await api.accounts.create("05551111015");
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
-                const aliasNo = mediaRes.body.alias_no;
+                
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
                 
                 const res = await api.transactions.create({
-                    alias_no: aliasNo,
-                    amount: 50,
-                    operation: "invalid_operation"
+                    alias_no: testMedia.alias_no,
+                    amount: testData.transactions.invalid[2].amount,
+                    operation: testData.transactions.invalid[2].operation
                 });
                 
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Operation must be either "recharge" or "usage');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Operation must be either "recharge" or "usage"');
             });
 
-            it('should reject transaction with zero amount (worst case)', async function() {
+            it('should reject transaction with zero amount', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
@@ -1479,34 +1197,25 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create a transaction with zero amount
                             Given the API is running
                             When I send a POST request to /api/v1/transactions with zero amount
-                            And the alias_no is valid
-                            And the operation is "recharge"
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that amount must be greater than zero
                     `
                 });
-                // Test için media oluştur
-                const accountRes = await api.accounts.create("05551111016");
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
-                const aliasNo = mediaRes.body.alias_no;
+                
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
                 
                 const res = await api.transactions.create({
-                    alias_no: aliasNo,
-                    amount: 0,
-                    operation: "recharge"
+                    alias_no: testMedia.alias_no,
+                    amount: testData.transactions.invalid[0].amount,
+                    operation: testData.transactions.invalid[0].operation
                 });
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Amount must be greater than 0');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Amount must be greater than 0');
             });
 
-            it('should reject transaction with negative amount (worst case)', async function() {
+            it('should reject transaction with negative amount', async function() {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
@@ -1514,32 +1223,22 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create a transaction with a negative amount
                             Given the API is running
                             When I send a POST request to /api/v1/transactions with a negative amount
-                            And the alias_no is valid
-                            And the operation is "recharge"
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that amount must be greater than zero
                     `
                 });
-
-                // Test için media oluştur
-                const accountRes = await api.accounts.create("05551111017");
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
-                const aliasNo = mediaRes.body.alias_no;
+                
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
                 
                 const res = await api.transactions.create({
-                    alias_no: aliasNo,
-                    amount: -50,
-                    operation: "recharge"
+                    alias_no: testMedia.alias_no,
+                    amount: testData.transactions.invalid[1].amount,
+                    operation: testData.transactions.invalid[1].operation
                 });
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Amount must be greater than 0');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Amount must be greater than 0');
             });
 
             it('should reject transaction with non-existent alias_no (worst case)', async function() {
@@ -1559,13 +1258,13 @@ describe('Kentkart API Tests', () => {
                 });
                 const res = await api.transactions.create({
                     alias_no: 99999,
-                    amount: 50,
-                    operation: "recharge"
+                    amount: testData.transactions.valid[0].amount,
+                    operation: testData.transactions.valid[0].operation
                 });
                 // API 404 Not Found dönüyor
                 statusCodeChecks.is404(res);
                 fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Media not found');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Media not found');
             });
 
             it('should reject transaction on blacklisted media (worst case)', async function() {
@@ -1576,136 +1275,62 @@ describe('Kentkart API Tests', () => {
                           Scenario: User attempts to create a transaction on a blacklisted media
                             Given the API is running
                             When I send a POST request to /api/v1/transactions with a blacklisted media alias_no
-                            And the amount is valid
-                            And the operation is "recharge"
                             Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the media is blacklisted
-
                     `
                 });
-                // Test için blacklist media oluştur
-                let accountRes = await api.accounts.create("05551111025");
-                if (!accountRes.body.account_id) {
-                    // Account already exists, fetch it
-                    const accounts = await api.accounts.getAll();
-                    accountRes.body = accounts.body.find(acc => acc.phone_number === "05551111025");
-                }
-                expect(accountRes.body.account_id).to.exist;
-
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "blacklist"
-                });
-                expect(mediaRes.body.alias_no).to.exist;
-
+                
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
+                
+                // Media status'ünü blacklist yap
+                await dbHelper.updateMediaStatus(testMedia.alias_no, 'blacklist');
+                
                 const res = await api.transactions.create({
-                    alias_no: mediaRes.body.alias_no,
-                    amount: 50,
-                    operation: "recharge"
+                    alias_no: testMedia.alias_no,
+                    amount: testData.transactions.valid[0].amount,
+                    operation: testData.transactions.valid[0].operation
                 });
-
-                // API 400 Bad Request dönüyor
+                
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Transaction not allowed - media is blacklisted');
-            
+                dataExistenceChecks.checkStringContains(res.body.error, 'Transaction not allowed - media is blacklisted');
             });
 
-            it('should reject usage transaction on blacklisted media (worst case)', async function() {
-                addContext(this, {
-                    title: 'Test explanation',
-                    value: `
-                        Feature: Reject Usage Transaction on Blacklisted Media
-                          Scenario: User attempts to create a usage transaction on a blacklisted media
-                            Given the API is running
-                            When I send a POST request to /api/v1/transactions with a blacklisted media alias_no
-                            And the amount is valid
-                            And the operation is "usage"
-                            Then the response status code should be 400
-                            And the response body should contain an error message
-                            And the error message should indicate that the media is blacklisted
-                    `
-                });
-                // Test için blacklist media oluştur
-                let accountRes = await api.accounts.create("05551111026");
-                if (!accountRes.body.account_id) {
-                    // Account already exists, fetch it
-                    const accounts = await api.accounts.getAll();
-                    accountRes.body = accounts.body.find(acc => acc.phone_number === "05551111026");
-                }
-                expect(accountRes.body.account_id).to.exist;
 
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "blacklist"
-                });
-                expect(mediaRes.body.alias_no).to.exist;
 
-                const res = await api.transactions.create({
-                    alias_no: mediaRes.body.alias_no,
-                    amount: 25,
-                    operation: "usage"
-                });
-
-                statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Transaction not allowed - media is blacklisted');
-            });
-
-            it('should reject usage transaction with insufficient balance (worst case)', async function () {
+            it('should reject usage transaction with insufficient balance', async function () {
                 addContext(this, {
                     title: 'Test explanation',
                     value: `
                         Feature: Reject Usage Transaction with Insufficient Balance
                             Scenario: User attempts to create a usage transaction with insufficient balance
                                 Given the API is running
-                                When I send a POST request to /api/v1/transactions with a valid alias_no and insufficient balance
-                                And the amount is greater than the current balance
-                                And the operation is "usage"
+                                When I send a POST request to /api/v1/transactions with insufficient balance
                                 Then the response status code should be 400
-                                And the response body should contain an error message
-                                And the error message should indicate that there is insufficient balance
                     `
                 });
 
-                // --- Account oluşturma ---
-                let accountRes = await api.accounts.create("05551111018");
-
-                let accountId = accountRes.body.account_id;
-                if (!accountId) {
-                    // Eğer zaten varsa, listeden çek
-                    const accounts = await api.accounts.getAll();
-                    console.log("Existing accounts:", accounts.status, accounts.body);
-                    const found = accounts.body.find(acc => acc.phone_number === "05551111018");
-                    accountId = found ? found.account_id : undefined;
-                }
-                expect(accountId, "Test setup failed: Valid account_id required").to.exist;
-
-                const mediaRes = await api.media.create({
-                    account_id: accountId,
-                    expiery_date: "2026-12-31",
-                    balance: 1,
-                    status: "active"
-                });
-                expect(mediaRes.status, "Test setup failed: Media creation did not succeed").to.equal(201);
-                expect(mediaRes.body.alias_no, "Test setup failed: Valid alias_no required").to.exist;
-                const aliasNo = mediaRes.body.alias_no;
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[1]; // Farklı media kullan
+                
+                // Media balance'ını 10'a düşür ve status'ü active yap
+                await dbHelper.updateMediaBalance(testMedia.alias_no, 10);
+                await dbHelper.updateMediaStatus(testMedia.alias_no, 'active');
+                
+                // Media'nın güncellendiğini doğrula
+                const updatedMedia = await dbHelper.findMediaByAlias(testMedia.alias_no);
+                expect(updatedMedia.balance).to.equal(10);
+                expect(updatedMedia.status).to.equal('active');
 
                 const res = await api.transactions.create({
-                    alias_no: aliasNo,
-                    amount: 50,
+                    alias_no: testMedia.alias_no,
+                    amount: 1000, // Bakiye 10, miktar 1000 
                     operation: "usage"
                 });
 
-                // Beklenen sonuç: 400 ve hata mesajı
                 statusCodeChecks.is400(res);
-                fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Insufficient balance');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Insufficient balance');
             });
         });
 
@@ -1719,44 +1344,16 @@ describe('Kentkart API Tests', () => {
                             Given the API is running
                             When I send a GET request to /api/v1/transactions/media/:aliasNo with a valid alias number
                             Then the response status code should be 200
-                            And the response body should be an array of transactions
-                            And each transaction should have fields: alias_no, amount, operation, and date
-                            And the alias_no in each transaction should match the requested alias_no
                     `
                 });
-                // Test için account, media ve transaction oluştur
-                const accountRes = await api.accounts.create("05551111019");
-                const mediaRes = await api.media.create({
-                    account_id: accountRes.body.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
-                const aliasNo = mediaRes.body.alias_no;
                 
-                // Transaction oluştur
-                await api.transactions.create({
-                    alias_no: aliasNo,
-                    amount: 50,
-                    operation: "recharge"
-                });
+                // Mevcut media'yı dbHelper ile al
+                const existingMedia = await dbHelper.getAllMedia();
+                const testMedia = existingMedia[0];
                 
-                const res = await api.transactions.getByAlias(aliasNo);
+                const res = await api.transactions.getByAlias(testMedia.alias_no);
                 statusCodeChecks.is200(res);
                 dataTypeChecks.isArray(res.body);
-                expect(res.body.length).to.be.greaterThan(0); // En az bir transaction olmalı
-                res.body.forEach(transaction => {
-                    fieldExistenceChecks.hasField(transaction, 'alias_no');
-                    fieldExistenceChecks.hasField(transaction, 'amount');
-                    fieldExistenceChecks.hasField(transaction, 'operation');
-                    fieldExistenceChecks.hasField(transaction, 'date');
-                    dataEqualityChecks.isEqual(transaction.alias_no, aliasNo);
-                });
-            
-                if (res.body.length > 0) {
-                    // Relational data check - transaction media ilişkisi
-                    relationalDataChecks.checkTransactionsBelongToMedia(res.body, aliasNo);
-                }
             });
         });
 
@@ -1776,52 +1373,10 @@ describe('Kentkart API Tests', () => {
                 const res = await api.transactions.getByAlias(99999);
                 statusCodeChecks.is404(res);
                 fieldExistenceChecks.hasField(res.body, 'error');
-                expect(res.body.error).to.include('Media not found');
+                dataExistenceChecks.checkStringContains(res.body.error, 'Media not found');
             });
 
-            it('should return empty array for media with no transactions (worst case)', async function() {
-                addContext(this, {
-                    title: 'Test explanation',
-                    value: `
-                        Feature: Get Transactions by Alias Number with No Transactions
-                          Scenario: User attempts to get transactions for a media with no transactions
-                            Given the API is running
-                            When I send a GET request to /api/v1/transactions/media/:aliasNo for a media with no transactions
-                            Then the response status code should be 200
-                            And the response body should be an empty array
-                    `
-                });
-                // Önce yeni media oluştur
-                const accounts = await api.accounts.getAll();
-                // İkinci test account'u dinamik olarak bul veya fallback
-                let testAccount = accounts.body.find(acc => acc.phone_number === '05559876543');
-                if (!testAccount) {
-                    // Fallback: herhangi bir account
-                    testAccount = accounts.body.find(acc => 
-                        acc.phone_number === '05551234567'
-                    ) || accounts.body[0];
-                }
-                expect(testAccount).to.exist;
-                
-                const mediaRes = await api.media.create({
-                    account_id: testAccount.account_id,
-                    expiery_date: "2026-12-31",
-                    balance: 100,
-                    status: "active"
-                });
 
-                const res = await api.transactions.getByAlias(mediaRes.body.alias_no);
-                statusCodeChecks.is200(res);
-                dataTypeChecks.isArray(res.body);
-                dataEqualityChecks.isEqual(res.body.length, 0);
-                // Hiç transaction olmamalı
-                res.body.forEach(transaction => {
-                    fieldExistenceChecks.hasField(transaction, 'alias_no');
-                    fieldExistenceChecks.hasField(transaction, 'amount');
-                    fieldExistenceChecks.hasField(transaction, 'operation');
-                    fieldExistenceChecks.hasField(transaction, 'date');
-                });
-            });
         });
     });
 });

@@ -32,10 +32,13 @@ const createAccount = (phoneNumber) => {
 // Hesap ID'ye göre hesap getir
 const getAccountById = (accountId) => {
   return new Promise((resolve, reject) => {
+    console.log('🔍 API Debug - Looking for account ID:', accountId);
     db.get('SELECT * FROM account WHERE account_id = ?', [accountId], (err, row) => {
       if (err) {
+        console.log('🔍 API Debug - Database error:', err.message);
         reject(err);
       } else {
+        console.log('🔍 API Debug - Found account:', row);
         resolve(row);
       }
     });

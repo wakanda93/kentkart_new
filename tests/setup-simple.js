@@ -1,6 +1,8 @@
 const db = require('../database');
 const chai = require('chai');
 const chaiHttp = require('chai-http');
+const testData = require('./testData');
+const dbHelper = require('./dbHelper');
 
 // API base URL
 const API_BASE_URL = 'http://localhost:3000';
@@ -45,15 +47,22 @@ const api = {
         getAll: () => chai.request(API_BASE_URL).get('/api/v1/media'),
         getByAlias: (alias) => chai.request(API_BASE_URL).get(`/api/v1/media/${alias}`),
         getByAccount: (accountId) => chai.request(API_BASE_URL).get(`/api/v1/media/account/${accountId}`),
+        getOrphan: () => chai.request(API_BASE_URL).get('/api/v1/media/orphan'),
         create: (data) => chai.request(API_BASE_URL)
             .post('/api/v1/media')
             .send(data),
         updateBalance: (aliasNo, balance) => chai.request(API_BASE_URL)
             .put(`/api/v1/media/${aliasNo}/balance`)
             .send({ balance }),
+        updateBalanceWithEmptyBody: (aliasNo) => chai.request(API_BASE_URL)
+            .put(`/api/v1/media/${aliasNo}/balance`)
+            .send({}),
         updateStatus: (aliasNo, status) => chai.request(API_BASE_URL)
             .put(`/api/v1/media/${aliasNo}/status`)
-            .send({ status })
+            .send({ status }),
+        updateStatusWithEmptyBody: (aliasNo) => chai.request(API_BASE_URL)
+            .put(`/api/v1/media/${aliasNo}/status`)
+            .send({})
     },
 
     // Transaction işlemleri
@@ -66,198 +75,167 @@ const api = {
     }
 };
 
-// Statik test verilerini database'e insert et
-const prepareTestData = async () => {
+// Test data setini kullanarak database'e veri insert et
+// Test verisi hazırlama fonksiyonu - Basitleştirilmiş
+const  prepareTestData = async () => {
+
     
     try {
-        // Statik test hesapları
-        const testAccounts = [
-            { phone_number: '05551234567' }, // Account 1
-            { phone_number: '05559876543' }  // Account 2
-        ];
+        // Önce tüm test hesaplarını oluştur veya mevcut olanları al
+        const accounts = [];
         
-        const createdAccounts = [];
-        
-        // Hesapları database'e insert et
-        for (const accountData of testAccounts) {
-            await new Promise((resolve, reject) => {
-                db.run(
-                    'INSERT INTO account (phone_number) VALUES (?)',
-                    [accountData.phone_number],
-                    function(err) {
-                        if (err) {
-                        } else {
-                            const account = {
-                                account_id: this.lastID,
-                                phone_number: accountData.phone_number
-                            };
-                            createdAccounts.push(account);
-                        }
-                        resolve();
-                    }
-                );
-            });
+        // Static test hesaplarını oluştur veya mevcut olanları al
+        for (const accountData of testData.accounts.static) {
+            let account = await dbHelper.findAccountByPhone(accountData.phone_number);
+            if (!account) {
+                account = await dbHelper.createAccount(accountData.phone_number);
+            }
+            accounts.push(account);
         }
         
-        // Test media verileri - özel tanımlı (SECURITY FIX: Zero balance kaldırıldı)
-        const testMediaData = [
-            { account_index: 0, balance: 100.00, status: 'active' },    // Media1 -> Account1 (active, 100 TL)
-            { account_index: 1, balance: 50.00, status: 'active' },     // Media2 -> Account2 (active, 50 TL) - FIXED: Zero balance removed
-            { account_index: 1, balance: 100.00, status: 'blacklist' }, // Media3 -> Account2 (blacklist, 100 TL)
-            { account_index: null, balance: 100.00, status: 'active' }  // Media4 -> Orphan (active, 100 TL)
-        ];
+
         
-        const createdMedia = [];
-        for (const mediaData of testMediaData) {
-            const account = mediaData.account_index !== null ? createdAccounts[mediaData.account_index] : null;
-            const accountId = account ? account.account_id : null;
+        // Static test media'larını oluştur
+        for (const mediaData of testData.media.static) {
+            const accountIndex = mediaData.account_index;
+            const accountId = accountIndex !== null ? accounts[accountIndex].account_id : null;
             
-            await new Promise((resolve, reject) => {
-                const createDate = new Date().toISOString().split('T')[0];
-                const expiryDate = '2025-12-31';
-                
-                db.run(
-                    'INSERT INTO media (account_id, create_date, expiery_date, balance, status) VALUES (?, ?, ?, ?, ?)',
-                    [accountId, createDate, expiryDate, mediaData.balance, mediaData.status],
-                    function(err) {
-                        if (err) {
-                        } else {
-                            const media = {
-                                alias_no: this.lastID,
-                                account_id: accountId,
-                                create_date: createDate,
-                                expiery_date: expiryDate,
-                                balance: mediaData.balance,
-                                status: mediaData.status
-                            };
-                            createdMedia.push(media);
-                            const accountInfo = accountId ? `Account: ${accountId}` : 'Orphan Media';
-                        }
-                        resolve();
-                    }
-                );
+            const media = await dbHelper.createMedia({
+                account_id: accountId,
+                balance: mediaData.balance,
+                status: mediaData.status,
+                expiery_date: mediaData.expiery_date
             });
+            
+
         }
         
-        return {
-            accounts: createdAccounts,
-            media: createdMedia
-        };
+        // Orphan media'ları oluştur
+        for (const mediaData of testData.media.orphan) {
+            const media = await dbHelper.createMedia({
+                account_id: null,
+                balance: mediaData.balance,
+                status: mediaData.status,
+                expiery_date: mediaData.expiery_date
+            });
+            
+
+        }
+        
+
+        
+        // Static account ID'lerini test data'ya kaydet
+        testData.accounts.static[0].id = accounts[0].account_id;
+        testData.accounts.static[1].id = accounts[1].account_id;
+        testData.accounts.static[2].id = accounts[2].account_id;
+        
+        return { accounts, media: [] };
         
     } catch (error) {
+        console.error('❌ Test verisi hazırlanırken hata:', error.message);
         throw error;
     }
 };
 
-// Basit temizlik fonksiyonu - Sadece tanımladığımız test verilerini temizle
+// Gelişmiş temizlik fonksiyonu - Hiç test verisi bırakmaz
 const cleanup = async () => {
     
     try {
-        // SADECE STATIK TEST VERİLERİNİ TEMİZLE
-        // 1. Setup'ta oluşturulan statik test telefon numaraları
-        const staticTestPhones = [
-            '05551234567', '05559876543'
-        ];
+
         
-        // 2. Test sırasında oluşturulan bilinen test telefon numaraları
-        const knownTestPhones = [
-            '05551111001', '05551111002', '05551111003', 
-            '05551111005', '05551111006', '05551111007', '05551111008',
-            '05551111010', '05551111011', '05551111012', '05551111013', '05551111014', 
-            '05551111015', '05551111016', '05551111017', '05551111018', '05551111019',
-            '05551111020', '05551111021',
-            '05559999001', '05559999002', '05559999003',
-            '05511111111', '05522222222', '05533333333'
-        ];
+        // Test data setinden temizlenecek telefon numaralarını al
+        const accountPhones = testData.accounts.static.map(acc => acc.phone_number);
+        const allTestPhones = [...accountPhones, ...testData.testPhones];
         
-        // Tüm temizlenecek telefon numaraları
-        const allTestPhones = [...staticTestPhones, ...knownTestPhones];
+        // 1. Test hesaplarına ait transaction'ları sil (phone number ile)
+        if (allTestPhones.length > 0) {
+            await new Promise((resolve) => {
+                db.run(`DELETE FROM [transaction] WHERE alias_no IN (
+                    SELECT alias_no FROM media WHERE account_id IN (
+                        SELECT account_id FROM account WHERE phone_number IN (${allTestPhones.map(() => '?').join(',')})
+                    )
+                )`, allTestPhones, (err) => {
+                    if (err) console.log(`⚠️ Transaction temizlik hatası: ${err.message}`);
+                    resolve();
+                });
+            });
+        }
         
-        // 1. Test hesaplarına ait transaction'ları sil
+        // 2. Test hesaplarına ait media'ları sil (phone number ile)
+        if (allTestPhones.length > 0) {
+            await new Promise((resolve) => {
+                db.run(`DELETE FROM media WHERE account_id IN (
+                    SELECT account_id FROM account WHERE phone_number IN (${allTestPhones.map(() => '?').join(',')})
+                )`, allTestPhones, (err) => {
+                    if (err) console.log(`⚠️ Media temizlik hatası: ${err.message}`);
+                    resolve();
+                });
+            });
+        }
+        
+        // 3. Test hesaplarını sil (phone number ile)
+        if (allTestPhones.length > 0) {
+            await new Promise((resolve) => {
+                db.run(`DELETE FROM account WHERE phone_number IN (${allTestPhones.map(() => '?').join(',')})`, 
+                    allTestPhones, (err) => {
+                    if (err) console.log(`⚠️ Account temizlik hatası: ${err.message}`);
+                    resolve();
+                });
+            });
+        }
+        
+        // 4. Phone number null olan test account'ları sil
+        await new Promise((resolve) => {
+            db.run(`DELETE FROM account WHERE phone_number IS NULL`, [], (err) => {
+                if (err) console.log(`⚠️ Null phone account temizlik hatası: ${err.message}`);
+                resolve();
+            });
+        });
+        
+        // 5. Phone number null olan account'lara ait media'ları sil
+        await new Promise((resolve) => {
+            db.run(`DELETE FROM media WHERE account_id IN (
+                SELECT account_id FROM account WHERE phone_number IS NULL
+            )`, [], (err) => {
+                if (err) console.log(`⚠️ Null phone media temizlik hatası: ${err.message}`);
+                resolve();
+            });
+        });
+        
+        // 6. Phone number null olan account'lara ait transaction'ları sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM [transaction] WHERE alias_no IN (
                 SELECT alias_no FROM media WHERE account_id IN (
-                    SELECT account_id FROM account WHERE phone_number IN (${allTestPhones.map(() => '?').join(',')})
+                    SELECT account_id FROM account WHERE phone_number IS NULL
                 )
-            )`, allTestPhones, (err) => {
-                if (err) console.log(`⚠️ Transaction temizlik hatası: ${err.message}`);
-                resolve();
-            });
-        });
-        
-        // 2. Permanent account'a bağlı test transaction'ları sil (bugün oluşturulanlar, permanent hariç)
-        await new Promise((resolve) => {
-            db.run(`DELETE FROM [transaction] WHERE alias_no IN (
-                SELECT alias_no FROM media WHERE account_id = 1 
-                AND create_date >= date('now')
-                AND alias_no > 1
             )`, [], (err) => {
-                if (err) console.log(`⚠️ Permanent account test transaction temizlik hatası: ${err.message}`);
+                if (err) console.log(`⚠️ Null phone transaction temizlik hatası: ${err.message}`);
                 resolve();
             });
         });
         
-        // 3. Setup'ta oluşturulan orphan media'ların transaction'larını sil
+        // 7. Orphan media'ları sil
+        await new Promise((resolve) => {
+            db.run(`DELETE FROM media WHERE account_id IS NULL`, [], (err) => {
+                if (err) console.log(`⚠️ Orphan media temizlik hatası: ${err.message}`);
+                resolve();
+            });
+        });
+        
+        // 8. Orphan media'ların transaction'larını sil
         await new Promise((resolve) => {
             db.run(`DELETE FROM [transaction] WHERE alias_no IN (
-                SELECT alias_no FROM media WHERE account_id IS NULL 
-                AND create_date >= date('now', '-1 day')
+                SELECT alias_no FROM media WHERE account_id IS NULL
             )`, [], (err) => {
                 if (err) console.log(`⚠️ Orphan transaction temizlik hatası: ${err.message}`);
                 resolve();
             });
         });
         
-        // 3. Test hesaplarına ait media'ları sil
-        await new Promise((resolve) => {
-            db.run(`DELETE FROM media WHERE account_id IN (
-                SELECT account_id FROM account WHERE phone_number IN (${allTestPhones.map(() => '?').join(',')})
-            )`, allTestPhones, (err) => {
-                if (err) console.log(`⚠️ Media temizlik hatası: ${err.message}`);
-                resolve();
-            });
-        });
-        
-        // 4. Permanent account'a bağlı test media'ları sil (bugün oluşturulanlar)
-        await new Promise((resolve) => {
-            db.run(`DELETE FROM media WHERE account_id = 1 
-                AND create_date >= date('now') 
-                AND alias_no > 1`, [], (err) => {
-                if (err) console.log(`⚠️ Permanent account test media temizlik hatası: ${err.message}`);
-                resolve();
-            });
-        });
-        
-        // 5. Setup'ta oluşturulan orphan media'ları sil (bugün oluşturulanlar)
-        await new Promise((resolve) => {
-            db.run(`DELETE FROM media WHERE account_id IS NULL 
-                AND create_date >= date('now', '-1 day')`, [], (err) => {
-                if (err) console.log(`⚠️ Orphan media temizlik hatası: ${err.message}`);
-                resolve();
-            });
-        });
-        
-        // 5. Test hesaplarını sil
-        await new Promise((resolve) => {
-            db.run(`DELETE FROM account WHERE phone_number IN (${allTestPhones.map(() => '?').join(',')})`, 
-                allTestPhones, (err) => {
-                if (err) console.log(`⚠️ Account temizlik hatası: ${err.message}`);
-                resolve();
-            });
-        });
-        
-        // 6. Test sırasında oluşan geçici hesapları sil (pattern-based sadece test prefix'leri için)
-        await new Promise((resolve) => {
-            db.run(`DELETE FROM account WHERE 
-                phone_number LIKE 'test-%' OR 
-                phone_number LIKE 'temp-%' OR
-                phone_number LIKE 'invalid-%'`, [], (err) => {
-                if (err) console.log(`⚠️ Pattern temizlik hatası: ${err.message}`);
-                resolve();
-            });
-        });
+
         
     } catch (error) {
+        console.error('❌ Database temizlenirken hata:', error.message);
     }
 };
 
@@ -269,7 +247,91 @@ const beforeTests = async () => {
 
 // Test sonrası temizlik
 const afterTests = async () => {
-    await cleanup();
+    try {
+        // Test sırasında oluşturulan transaction'ları temizle
+        await dbHelper.clearTestTransactions();
+        
+        // Genel temizlik
+        await cleanup();
+    } catch (error) {
+        console.error('❌ Test sonrası temizlik hatası:', error.message);
+    }
+};
+
+// Her test sonrası reset fonksiyonu - Hesap ID'lerini sabit tutarak test verilerini ilk haline getir
+const resetTestData = async () => {
+    try {
+
+        
+        // Önce mevcut test hesaplarını kontrol et ve eksik olanları oluştur
+        const accounts = [];
+        
+        // Static test hesaplarını kontrol et ve eksik olanları oluştur
+        for (let i = 0; i < testData.accounts.static.length; i++) {
+            const accountData = testData.accounts.static[i];
+            
+            // prepareTestData'da atanan ID'yi kullan
+            const expectedId = accountData.id;
+            
+            let account = await dbHelper.findAccountByPhone(accountData.phone_number);
+            
+            if (!account) {
+                // Hesap yoksa beklenen ID ile oluştur
+                account = await dbHelper.createAccountWithId(expectedId, accountData.phone_number);
+            } else {
+                // Hesap varsa ama farklı ID'ye sahipse, media'ları doğru hesaba bağla
+                if (account.account_id !== expectedId) {
+                    // Önce eski hesaba ait media'ları yeni hesaba bağla
+                    await dbHelper.updateMediaAccountId(account.account_id, expectedId);
+                    // Sonra eski hesabı sil
+                    await dbHelper.deleteAccount(account.account_id);
+                    // Yeni hesabı oluştur
+                    account = await dbHelper.createAccountWithId(expectedId, accountData.phone_number);
+                }
+            }
+            
+            // ID'yi test data'ya kaydet (değiştirme, zaten doğru)
+            testData.accounts.static[i].id = expectedId;
+            accounts.push(account);
+        }
+        
+        // Static test media'larını kontrol et ve eksik olanları oluştur
+        for (const mediaData of testData.media.static) {
+            const accountIndex = mediaData.account_index;
+            const accountId = accountIndex !== null ? accounts[accountIndex].account_id : null;
+            
+            // Mevcut media'yı kontrol et
+            let media = await dbHelper.findMediaByAccount(accountId);
+            if (!media) {
+                media = await dbHelper.createMedia({
+                    account_id: accountId,
+                    balance: mediaData.balance,
+                    status: mediaData.status,
+                    expiery_date: mediaData.expiery_date
+                });
+            }
+        }
+        
+        // Orphan media'ları kontrol et ve eksik olanları oluştur
+        for (const mediaData of testData.media.orphan) {
+            // Mevcut orphan media'yı kontrol et
+            let media = await dbHelper.findOrphanMedia();
+            if (!media || media.length === 0) {
+                media = await dbHelper.createMedia({
+                    account_id: null,
+                    balance: mediaData.balance,
+                    status: mediaData.status,
+                    expiery_date: mediaData.expiery_date
+                });
+            }
+        }
+        
+
+        
+
+    } catch (error) {
+        console.error('❌ Test verisi sıfırlanırken hata:', error.message);
+    }
 };
 
 module.exports = {
@@ -279,5 +341,6 @@ module.exports = {
     cleanup,
     beforeTests,
     afterTests,
+    resetTestData,
     API_BASE_URL
 };

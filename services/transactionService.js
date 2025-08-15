@@ -122,33 +122,9 @@ const getTransactionsByAliasNo = (aliasNo) => {
   });
 };
 
-// Tarih aralığına göre işlemleri getir
-const getTransactionsByDateRange = (startDate, endDate) => {
-  return new Promise((resolve, reject) => {
-    db.all(`SELECT t.*, m.account_id, a.phone_number 
-            FROM [transaction] t 
-            LEFT JOIN media m ON t.alias_no = m.alias_no 
-            LEFT JOIN account a ON m.account_id = a.account_id 
-            WHERE t.date BETWEEN ? AND ? 
-            ORDER BY t.date DESC`, [startDate, endDate], (err, rows) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(rows);
-      }
-    });
-  });
-};
 
-// Recharge işlemi (eski refill)
-const createRecharge = async (aliasNo, amount) => {
-  return createTransaction(aliasNo, amount, 'recharge');
-};
 
-// Usage işlemi (eski deduction)
-const createUsage = async (aliasNo, amount) => {
-  return createTransaction(aliasNo, amount, 'usage');
-};
+
 
 // İşlem tipine göre işlemleri getir
 const getTransactionsByType = (transactionType) => {
@@ -167,8 +143,5 @@ module.exports = {
   getAllTransactions,
   createTransaction,
   getTransactionsByAliasNo,
-  getTransactionsByDateRange,
-  createRecharge,
-  createUsage,
   getTransactionsByType
 };
